@@ -1,6 +1,6 @@
 # MCP PostgreSQL Server
 
--<img src="assets/logo.svg" width="256" height="256" alt="Echo Logo" />
+-<img src="assets/logo.svg" width="256" height="256" alt="MCP Postgres Logo" />
 
 A Model Context Protocol (MCP) server that provides PostgreSQL database operations through MCP tools.
 
