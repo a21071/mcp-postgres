@@ -1,23 +1,105 @@
-#!/usr/bin/env node
-
-/**
- * A simple MCP echo server that repeats back whatever it is prompted for testing.
- * It implements a single tool that echoes back the input message.
- */
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  Result,
 } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+import { PrismaClient } from "@prisma/client";
+import {
+  addUserDataTool,
+  deleteUserDataTool,
+  getDataTool,
+  updateUserDataTool,
+} from "./tools.js";
 
-/**
- * Create an MCP server with capabilities for tools (to echo messages).
- */
+// Database Client
+export const prismaClient = new PrismaClient();
+
+const TableNameSchema = z.object({
+  tableName: z.string().describe("Name of the table to retrieve data from"),
+});
+
+const AddUserSchema = z.object({
+  email: z.string().email().describe("User email address"),
+  name: z.string().describe("User name"),
+  age: z.number().int().positive().describe("User age"),
+});
+
+const DeleteUserSchema = z.object({
+  id: z.string().describe("User Id").optional(),
+  email: z.string().email().describe("User email address").optional(),
+  name: z.string().describe("User name").optional(),
+});
+
+const tools = [
+  getDataTool,
+  addUserDataTool,
+  deleteUserDataTool,
+  updateUserDataTool,
+];
+
+// Tool Handlers
+class DatabaseToolHandlers {
+  async getData(tableName: string) {
+    // Validate input
+    // TableNameSchema.parse({ tableName });
+
+    const data = await prismaClient.user.findMany({
+      take: 100, // Limit results
+      orderBy: { createdAt: "desc" },
+    });
+
+    return {
+      content: data.map((user) => ({
+        type: "text",
+        text: JSON.stringify(user),
+      })),
+    };
+  }
+
+  async addUserData(params: z.infer<typeof AddUserSchema>) {
+    // Validate input
+    AddUserSchema.parse(params);
+
+    const newUser = await prismaClient.user.create({
+      data: {
+        name: params.name,
+        email: params.email,
+        age: params.age,
+      },
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(newUser),
+        },
+      ],
+    };
+  }
+
+  async deleteUserData(params: z.infer<typeof DeleteUserSchema>) {
+    DeleteUserSchema.parse(params);
+    const { count } = await prismaClient.user.deleteMany({
+      where: {
+        id: params.id,
+        email: params.email,
+        name: params.name,
+      },
+    });
+    return {
+      content: [{ type: "text", text: `${count} has been deleted` }],
+    };
+  }
+}
+
+// Server Configuration
 const server = new Server(
   {
-    name: "echo-server",
+    name: "mcp-postgres",
     version: "0.1.0",
   },
   {
@@ -27,70 +109,40 @@ const server = new Server(
   }
 );
 
-/**
- * Handler that lists available tools.
- * Exposes a single "echo" tool that echoes back the input message.
- */
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "echo",
-        description: "Echoes back the input message",
-        inputSchema: {
-          type: "object",
-          properties: {
-            message: {
-              type: "string",
-              description: "The message to echo back"
-            }
-          },
-          required: ["message"]
-        }
-      }
-    ]
-  };
-});
+// Request Handlers
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools,
+}));
 
-/**
- * Handler for the echo tool.
- * Simply returns the input message.
- */
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  switch (request.params.name) {
-    case "echo": {
-      const message = String(request.params.arguments?.message || "");
-      
-      if (!message) {
-        return {
-          content: [{
-            type: "text",
-            text: "You didn't provide a message to echo!"
-          }]
-        };
-      }
+const databaseToolHandlers = new DatabaseToolHandlers();
 
-      return {
-        content: [{
-          type: "text",
-          text: message
-        }]
-      };
+server.setRequestHandler(
+  CallToolRequestSchema,
+  async (request): Promise<Result> => {
+    const { name, arguments: args } = request.params;
+
+    if (name === "getData") {
+      return await databaseToolHandlers.getData(
+        (args?.tableName as string) ?? "user"
+      );
     }
-
-    default:
-      throw new Error("Unknown tool");
+    if (name === "addUserData") {
+      return await databaseToolHandlers.addUserData({
+        email: args?.email as string,
+        name: args?.name as string,
+        age: args?.age as number,
+      });
+    }
+    if (name === "deleteUserData") {
+      return await databaseToolHandlers.deleteUserData({});
+    }
+    throw new Error("Unknown tool");
   }
-});
+);
 
-/**
- * Start the server using stdio transport.
- * This allows the server to communicate via standard input/output streams.
- */
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Echo MCP server running on stdio");
 }
 
 main().catch((error) => {
